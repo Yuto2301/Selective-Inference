@@ -8,6 +8,7 @@ from scipy.stats import multivariate_normal
 import mglearn
 from sklearn.linear_model import Lasso
 from sklearn.model_selection import train_test_split
+from scipy.stats import truncnorm
 
 
 #generate response z
@@ -189,3 +190,65 @@ for i in range(len(theta)):
             x = solve_l(X, z, 10, maxiter=30000, tol=1e-5)
             if  x[list(M_hat).index(6)] != 0: s6[i] += 1
 s6 / nb
+
+# Marginal Screening
+# X: deta, y: model, k: number of selection, sigma: var of y, alpha: significance level
+def solve_MS(X, y, k, sigma, alpha):
+    # feature selection
+    z = X.T @ y
+    l = [i for i in zip(np.abs(z), np.sign(z), range(p))]
+    l.sort(reverse=True)
+    M_hat = set(l[i][2] for i in range(k))
+    s_hat = np.array([l[i][1] for i in range(p)])
+    # confidence interval
+    A = np.array([[0.0] * N for i in range(2 * k * (p - k) + k)])
+    for i in range(2 * (p - k) + 1):
+        for j in range(k):
+            if i == 2 * (p - k):
+                A[i + (2 * (p - k) + 1) * j] = -l[j][1] * X.T[l[j][2]]
+            else:
+                A[i + (2 * (p - k) + 1) * j] = (-1) ** i * X.T[l[int(k + i / 2)][2]] - l[j][1] * X.T[l[j][2]]
+    b = np.array([0 for i in range(2 * k * (p - k) + k)])
+    X_S = np.array([X.T[i] for i in M_hat]).T
+    eta = np.linalg.inv(X_S.T @ X_S) @ X_S.T
+    a = np.array([A @ eta[j] / (eta[j] @ eta[j]) for j in range(k)])
+    V_minus = np.array([max((b[j] - (A @ y)[j] + a[i][j] * eta[i] @ y) / a[i][j] for j in np.where(a[i] < 0)[0]) for i in range(k)])
+    V_plus = np.array([min((b[j] - (A @ y)[j] + a[i][j] * eta[i] @ y) / a[i][j] for j in np.where(a[i] > 0)[0]) for i in range(k)])
+    La = np.array([eta[i] @ y - truncnorm.ppf(1 - alpha / 2, V_minus[i], V_plus[i], 0, sigma * eta[i] @ eta[i]) for i in range(k)])
+    Ua = np.array([eta[i] @ y - truncnorm.ppf(alpha / 2, V_minus[i], V_plus[i], 0, sigma * eta[i] @ eta[i]) for i in range(k)])
+    return M_hat, s_hat, La, Ua
+
+def generate_y(X, n, sigma):
+    X_star = np.array([X[i] for i in np.random.choice(N, n)])
+    m = np.array([0 for i in range(n)])
+    epsilon = np.random.multivariate_normal(n, sigma * np.eye(n))
+    return np.sum(X_star, 1) / p + epsilon
+
+# bootstrap replicate
+nb = 10000
+
+# Selective Inference for Marginal Sceenning
+N = 50
+p = 25
+k = 10
+X = np.random.normal(0, 1, N*p).reshape(N, p)
+A = np.linalg.inv(X.T @ X) @ X.T
+beta = np.array([0.0] * p)
+for i in range(5):
+    beta[i] = 2
+
+z = generate_z(X, beta)
+N_j = np.array([0] * p)
+R_j = np.array([0] * p)
+for it in range(nb):
+    z_star = C_z_star(X, z, 2)
+    (M_hat, s_hat, La, Ua) = solve_MS(X, z_star, k, 1, 0.05)
+    for j in range(p):
+        if j in M_hat and s_hat[j] == 1:
+            N_j[j] += 1
+            X_star = np.array([X.T[s] for s in M_hat]).T
+            #beta_s_hat = solve_l(X_star, z, 10, maxiter=30000, tol=1e-5)
+            beta_s_hat = np.linalg.inv(X_star.T @ X_star) @ X_star.T @ z
+            s = list(M_hat).index(j)
+            if  La[s] <= beta[j] and beta[j] <= Ua[s] : R_j[j] += 1
+ 
